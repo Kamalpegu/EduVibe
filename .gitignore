@@ -1,0 +1,35 @@
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+src/**/.env
+
+# Python environments, bytecode, and test/lint caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# EduVibe local account, response, audio, and rendered-slide caches
+.eduvibe_accounts.sqlite3
+.eduvibe_slide_cache.sqlite3
+.eduvibe_audio_cache/
+.eduvibe_slide_svg_cache/
+
+# Generated CLI presentation artifacts
+src/image_create/slides.json
+src/image_create/slides_svg/
+src/start_pro/paragraph.txt
+src/start_pro/ppt_outputs/
+src/voice_over/speech.json
+src/voice_over/speech_hi.json
+src/voice_over/audio/
+src/voice_over/audio_hi/
+
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
