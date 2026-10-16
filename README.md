@@ -95,6 +95,28 @@ EduVibe is a FastAPI/ASGI app. PythonAnywhere's current ASGI hosting is experime
 
 PythonAnywhere's ASGI hosting is experimental; check its current account, pricing, and external-network-access requirements before relying on it in production. EduVibe needs outbound HTTPS access to Google token verification, Cloudflare Workers AI, and Puter.js in the browser. SQLite account/history data and generated caches are stored under the project directory, so keep that directory persistent and back up `.eduvibe_accounts.sqlite3` if you need to preserve signed-in users' chat history. PowerPoint export should be tested on the hosted environment because SVG-to-image rendering depends on the server's installed libraries.
 
+## Deploy to Vercel
+
+Vercel functions do not provide persistent local files. EduVibe uses Neon Postgres for account, chat, and slide-response data, and a private Vercel Blob store for rendered slide SVGs. The backend creates its tables automatically the first time it accesses Neon. Local development continues to use SQLite and local SVG files unless `DATABASE_URL` is set.
+
+1. Create a Neon Postgres database and copy its pooled connection string. Require TLS (`sslmode=require`).
+2. In Vercel, create a private Blob store for the project and copy its read-write token.
+3. Import the project’s GitHub repository into Vercel with the project root as the **Root Directory**. Vercel detects the root [`index.py`](./index.py) FastAPI entrypoint and uses [`requirements.txt`](./requirements.txt) to install dependencies.
+4. In **Project Settings → Environment Variables**, configure:
+
+   - `DATABASE_URL` — Neon connection string
+   - `BLOB_READ_WRITE_TOKEN` — token for the Vercel Blob store
+   - `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` — Workers AI
+   - `GOOGLE_CLIENT_ID` — Google sign-in web client ID
+   - `OPENAI_API_KEY` — only if required by the selected query/AI integration
+
+   Set variables for the environments where you will deploy (Production, and Preview if needed), then redeploy after changing them. Do not upload or commit the populated local `.env`.
+
+5. Add the deployed Vercel domain (for example, `https://your-project.vercel.app`) to the Google OAuth client’s **Authorized JavaScript origins**.
+6. Deploy and check `https://your-project.vercel.app/api/health`; expect `{"status":"ok"}`. Test sign-in, a slide search, reopening the generated SVG, and PowerPoint export.
+
+New sign-ins and generated slide caches are stored in Neon; slide SVGs are kept in the private Blob store and served through EduVibe’s API. Existing local SQLite accounts and history are not copied automatically and will not appear in the deployed database. Web narration continues to use browser-based Puter.js. Export uses temporary function storage and depends on the runtime’s ability to render the SVG slides; verify this feature on the deployed project.
+
 ## Cloudflare credentials
 
 Slide and narration generation use Cloudflare Workers AI. Create an API token with permission to run Workers AI models and obtain your Cloudflare account ID. Copy `.env.example` to `.env` in the project root and fill in:
