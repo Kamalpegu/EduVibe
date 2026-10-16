@@ -47,6 +47,54 @@ python3 -m venv .venv
 
 Open <http://127.0.0.1:8000>. Press **Ctrl+C** to stop the server.
 
+## Deploy to PythonAnywhere
+
+EduVibe is a FastAPI/ASGI app. PythonAnywhere's current ASGI hosting is experimental and may need to be enabled for your account; it is separate from the usual WSGI Web tab setup. Review the [PythonAnywhere ASGI guide](https://help.pythonanywhere.com/pages/ASGICommandLine/) and request access through the account feedback link if ASGI hosting is not enabled. PythonAnywhere currently documents deploying ASGI apps with its `pa` command-line tool.
+
+1. Push the project to GitHub, then open a Bash console on PythonAnywhere and clone your repository:
+
+   ```bash
+   cd ~
+   git clone https://github.com/YOUR_GITHUB_USERNAME/EduVibe.git
+   cd ~/EduVibe
+   ```
+
+2. Create a PythonAnywhere virtual environment using a Python version available to your account, then install the project requirements:
+
+   ```bash
+   mkvirtualenv eduvibe --python=python3.13
+   pip install -r requirements.txt
+   ```
+
+   If `python3.13` is not available to your account, choose an available Python version and use that same version for the virtual environment.
+
+3. Create the deployment's private root `.env` from the example and enter the existing credentials using the PythonAnywhere file editor:
+
+   ```bash
+   cp .env.example .env
+   chmod 600 .env
+   nano .env
+   ```
+
+   Keep the populated `.env` on the server only; do not upload it to GitHub. The backend and standalone processing scripts load this shared file.
+
+4. Add `https://YOURUSERNAME.pythonanywhere.com` as an **Authorized JavaScript origin** for your Google OAuth web client, and set `GOOGLE_CLIENT_ID` in the server `.env` to that client ID. Use your actual PythonAnywhere domain (including the regional suffix if your account uses one).
+
+5. Install the PythonAnywhere deployment CLI and create the ASGI website. Replace `YOURUSERNAME` and the domain with your account details:
+
+   ```bash
+   pip install --upgrade pythonanywhere
+   pa website create \
+     --domain YOURUSERNAME.pythonanywhere.com \
+     --command '/home/YOURUSERNAME/.virtualenvs/eduvibe/bin/uvicorn --app-dir /home/YOURUSERNAME/EduVibe/src --uds ${DOMAIN_SOCKET} backend.main:app'
+   ```
+
+   The command is intentionally quoted so PythonAnywhere can substitute `${DOMAIN_SOCKET}`. The app serves its frontend through FastAPI, so it does not require separate static-file mappings.
+
+6. Visit `https://YOURUSERNAME.pythonanywhere.com/api/health`; expect `{"status":"ok"}`. After deploying code updates, run `pa website reload --domain YOURUSERNAME.pythonanywhere.com`.
+
+PythonAnywhere's ASGI hosting is experimental; check its current account, pricing, and external-network-access requirements before relying on it in production. EduVibe needs outbound HTTPS access to Google token verification, Cloudflare Workers AI, and Puter.js in the browser. SQLite account/history data and generated caches are stored under the project directory, so keep that directory persistent and back up `.eduvibe_accounts.sqlite3` if you need to preserve signed-in users' chat history. PowerPoint export should be tested on the hosted environment because SVG-to-image rendering depends on the server's installed libraries.
+
 ## Cloudflare credentials
 
 Slide and narration generation use Cloudflare Workers AI. Create an API token with permission to run Workers AI models and obtain your Cloudflare account ID. Copy `.env.example` to `.env` in the project root and fill in:
