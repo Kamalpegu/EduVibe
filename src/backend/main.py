@@ -21,8 +21,10 @@ import sqlite3
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional
 
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport import requests as google_requests
@@ -70,9 +72,12 @@ app.include_router(query_router)
 app.include_router(download_router)
 
 CACHE_DB = PROJECT_ROOT / ".eduvibe_slide_cache.sqlite3"
-AUDIO_CACHE_DIR = PROJECT_ROOT / ".eduvibe_audio_cache"
-SLIDE_SVG_CACHE_DIR = PROJECT_ROOT / ".eduvibe_slide_svg_cache"
 AUTH_DB = PROJECT_ROOT / ".eduvibe_accounts.sqlite3"
+IS_VERCEL = os.getenv("VERCEL") == "1"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+LOCAL_CACHE_ROOT = Path(tempfile.gettempdir()) / "eduvibe" if IS_VERCEL else PROJECT_ROOT
+AUDIO_CACHE_DIR = LOCAL_CACHE_ROOT / ".eduvibe_audio_cache"
+SLIDE_SVG_CACHE_DIR = LOCAL_CACHE_ROOT / ".eduvibe_slide_svg_cache"
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 AUTH_COOKIE_NAME = "eduvibe_session"
 AUTH_SESSION_SECONDS = 30 * 24 * 60 * 60
@@ -116,7 +121,41 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def _init_auth_tables(connection: sqlite3.Connection) -> None:
+class _PostgresConnection:
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    def execute(self, statement: str, parameters: tuple[Any, ...] = ()) -> Any:
+        return self._connection.execute(statement.replace("?", "%s"), parameters)
+
+
+@contextmanager
+def _database_connection(local_path: Path) -> Iterator[Any]:
+    if IS_VERCEL and not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL must be configured for persistent Vercel storage.")
+    if DATABASE_URL:
+        import psycopg
+
+        with psycopg.connect(
+            DATABASE_URL,
+            connect_timeout=10,
+            prepare_threshold=None,
+        ) as connection:
+            yield _PostgresConnection(connection)
+        return
+
+    connection = sqlite3.connect(local_path, timeout=10)
+    try:
+        yield connection
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def _init_auth_tables(connection: Any) -> None:
     connection.execute(
         "CREATE TABLE IF NOT EXISTS google_accounts ("
         "google_sub TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL, "
@@ -144,7 +183,7 @@ def _account_from_session(session_token: Optional[str]) -> Optional[dict[str, st
     if not session_token:
         return None
     token_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
-    with sqlite3.connect(AUTH_DB, timeout=10) as connection:
+    with _database_connection(AUTH_DB) as connection:
         _init_auth_tables(connection)
         row = connection.execute(
             "SELECT a.email, a.name, a.picture "
@@ -159,7 +198,7 @@ def _google_sub_from_session(session_token: Optional[str]) -> Optional[str]:
     if not session_token:
         return None
     token_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
-    with sqlite3.connect(AUTH_DB, timeout=10) as connection:
+    with _database_connection(AUTH_DB) as connection:
         _init_auth_tables(connection)
         row = connection.execute(
             "SELECT google_sub FROM auth_sessions WHERE session_hash = ? AND expires_at > ?",
@@ -216,7 +255,7 @@ def google_sign_in(
     now = int(time.time())
     session_token = secrets.token_urlsafe(32)
     session_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
-    with sqlite3.connect(AUTH_DB, timeout=10) as connection:
+    with _database_connection(AUTH_DB) as connection:
         _init_auth_tables(connection)
         existing = connection.execute(
             "SELECT 1 FROM google_accounts WHERE google_sub = ?",
@@ -265,7 +304,7 @@ def google_sign_out(request: Request, response: Response) -> None:
     session_token = request.cookies.get(AUTH_COOKIE_NAME)
     if session_token:
         token_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
-        with sqlite3.connect(AUTH_DB, timeout=10) as connection:
+        with _database_connection(AUTH_DB) as connection:
             _init_auth_tables(connection)
             connection.execute("DELETE FROM auth_sessions WHERE session_hash = ?", (token_hash,))
     response.delete_cookie(
@@ -280,7 +319,7 @@ def google_sign_out(request: Request, response: Response) -> None:
 @app.get("/api/history", tags=["history"])
 def get_chat_history(request: Request) -> List[dict[str, Any]]:
     google_sub = _require_google_sub(request)
-    with sqlite3.connect(AUTH_DB, timeout=10) as connection:
+    with _database_connection(AUTH_DB) as connection:
         _init_auth_tables(connection)
         rows = connection.execute(
             "SELECT chat_json FROM user_chats WHERE google_sub = ? ORDER BY updated_at DESC",
@@ -299,7 +338,7 @@ def save_chat_history(chat_id: str, chat: SavedChat, request: Request) -> None:
         raise HTTPException(status_code=400, detail="The chat ID does not match the saved chat.")
     google_sub = _require_google_sub(request)
     chat_json = json.dumps(chat.dict(), ensure_ascii=False, separators=(",", ":"))
-    with sqlite3.connect(AUTH_DB, timeout=10) as connection:
+    with _database_connection(AUTH_DB) as connection:
         _init_auth_tables(connection)
         connection.execute(
             "INSERT INTO user_chats (google_sub, chat_id, chat_json, updated_at) "
@@ -312,7 +351,7 @@ def save_chat_history(chat_id: str, chat: SavedChat, request: Request) -> None:
 @app.delete("/api/history/{chat_id}", status_code=204, tags=["history"])
 def delete_chat_history(chat_id: str, request: Request) -> None:
     google_sub = _require_google_sub(request)
-    with sqlite3.connect(AUTH_DB, timeout=10) as connection:
+    with _database_connection(AUTH_DB) as connection:
         _init_auth_tables(connection)
         connection.execute(
             "DELETE FROM user_chats WHERE google_sub = ? AND chat_id = ?",
@@ -344,6 +383,90 @@ def _svg_has_current_logo(path: Path) -> bool:
         return 'id="eduvibe-logo-bottom-right"' in svg_file.read(2048)
 
 
+def _blob_path(lang: str, cache_id: str, slide_number: int) -> str:
+    return f"slides/{lang}/{cache_id}/slide_{slide_number:02d}.svg"
+
+
+def _blob_client() -> Any:
+    if not os.getenv("BLOB_READ_WRITE_TOKEN") and not os.getenv("BLOB_STORE_ID"):
+        raise RuntimeError(
+            "Connect a Vercel Blob store or configure BLOB_READ_WRITE_TOKEN."
+        )
+    try:
+        from vercel.blob import sync as blob
+    except ImportError as exc:
+        raise RuntimeError("Install the vercel-blob package to use persistent slide storage.") from exc
+    return blob
+
+
+def _upload_svg_to_blob(blob: Any, path: Path, pathname: str) -> None:
+    try:
+        blob.put_blob(
+            pathname,
+            path.read_bytes(),
+            access="private",
+            content_type="image/svg+xml",
+            allow_overwrite=True,
+        )
+    except blob.BlobError as exc:
+        logger.exception("Could not upload a generated slide to Vercel Blob")
+        raise RuntimeError("Could not store generated slides in Vercel Blob.") from exc
+
+
+def _store_slides_in_blob(
+    query: str,
+    lang: str,
+    slides: List[dict[str, Any]],
+    deck: dict[str, Any],
+) -> None:
+    blob = _blob_client()
+    cache_id = _audio_cache_id(query, lang)
+    with tempfile.TemporaryDirectory(prefix="eduvibe-svg-") as folder:
+        paths = image_get.generate(deck, folder)
+        slide_paths = paths[1:]
+        if len(slide_paths) != len(slides):
+            raise RuntimeError("The SVG renderer returned an unexpected number of slides.")
+        with ThreadPoolExecutor(max_workers=min(8, len(slide_paths))) as executor:
+            futures = [
+                executor.submit(
+                    _upload_svg_to_blob,
+                    blob,
+                    path,
+                    _blob_path(lang, cache_id, number),
+                )
+                for number, path in enumerate(slide_paths, 1)
+            ]
+            for future in futures:
+                future.result()
+
+
+def _read_slide_svg(lang: str, cache_id: str, slide_number: int) -> bytes:
+    if DATABASE_URL:
+        blob = _blob_client()
+        try:
+            return blob.get_blob(
+                _blob_path(lang, cache_id, slide_number),
+                access="private",
+            ).body
+        except blob.BlobNotFoundError as exc:
+            raise FileNotFoundError("Slide image not found in persistent storage.") from exc
+        except blob.BlobError as exc:
+            logger.exception("Could not read a slide from Vercel Blob")
+            raise RuntimeError("Could not read the slide image from persistent storage.") from exc
+
+    svg_path = SLIDE_SVG_CACHE_DIR / lang / cache_id / f"slide_{slide_number:02d}.svg"
+    if not svg_path.is_file():
+        raise FileNotFoundError("Slide image not found.")
+    return svg_path.read_bytes()
+
+
+def _materialize_slide_svgs(lang: str, cache_id: str, slide_count: int, target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for number in range(1, slide_count + 1):
+        path = target_dir / f"slide_{number:02d}.svg"
+        path.write_bytes(_read_slide_svg(lang, cache_id, number))
+
+
 def _slides_with_svg_urls(
     query: str,
     lang: str,
@@ -351,27 +474,31 @@ def _slides_with_svg_urls(
     deck: Optional[dict[str, Any]] = None,
 ) -> List[dict[str, Any]]:
     directory = _slide_svg_directory(query, lang)
-    expected_paths = [directory / f"slide_{number:02d}.svg" for number in range(1, len(slides) + 1)]
-    has_current_logo = all(_svg_has_current_logo(path) for path in expected_paths)
-    if not has_current_logo:
-        svg_deck = deck or {
-            "deck_title": slides[0]["title"] if slides else "",
-            "slides": [
-                {
-                    "slide_number": number,
-                    "layout": "bullets",
-                    "heading": slide["title"],
-                    "text": "",
-                    "points": slide.get("bullets", []),
-                    "numbered": False,
-                    "table": None,
-                    "formula": None,
-                    "source_text": "",
-                }
-                for number, slide in enumerate(slides, 1)
-            ],
-        }
-        image_get.generate(svg_deck, str(directory))
+    if DATABASE_URL:
+        if deck is not None:
+            _store_slides_in_blob(query, lang, slides, deck)
+    else:
+        expected_paths = [directory / f"slide_{number:02d}.svg" for number in range(1, len(slides) + 1)]
+        has_current_logo = all(_svg_has_current_logo(path) for path in expected_paths)
+        if not has_current_logo:
+            svg_deck = deck or {
+                "deck_title": slides[0]["title"] if slides else "",
+                "slides": [
+                    {
+                        "slide_number": number,
+                        "layout": "bullets",
+                        "heading": slide["title"],
+                        "text": "",
+                        "points": slide.get("bullets", []),
+                        "numbered": False,
+                        "table": None,
+                        "formula": None,
+                        "source_text": "",
+                    }
+                    for number, slide in enumerate(slides, 1)
+                ],
+            }
+            image_get.generate(svg_deck, str(directory))
 
     cache_id = _audio_cache_id(query, lang)
     return [
@@ -384,7 +511,7 @@ def _slides_with_svg_urls(
 
 
 def _cached_slides(query: str, lang: str) -> Optional[List[dict[str, Any]]]:
-    with sqlite3.connect(CACHE_DB, timeout=10) as connection:
+    with _database_connection(CACHE_DB) as connection:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS slide_search_cache "
             "(query_key TEXT PRIMARY KEY, slides_json TEXT NOT NULL)"
@@ -399,7 +526,7 @@ def _cached_slides(query: str, lang: str) -> Optional[List[dict[str, Any]]]:
 
 
 def _cache_slides(query: str, lang: str, slides: List[dict[str, Any]]) -> None:
-    with sqlite3.connect(CACHE_DB, timeout=10) as connection:
+    with _database_connection(CACHE_DB) as connection:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS slide_search_cache "
             "(query_key TEXT PRIMARY KEY, slides_json TEXT NOT NULL)"
@@ -463,6 +590,9 @@ def generate(req: GenerateRequest) -> List[dict[str, Any]]:
         except OSError as exc:
             logger.exception("Could not render cached slides to SVG")
             raise HTTPException(status_code=502, detail="Could not render cached slides. Please try again.") from exc
+        except RuntimeError as exc:
+            logger.exception("Could not read cached slide assets")
+            raise HTTPException(status_code=502, detail="Could not load cached slides. Please try again.") from exc
 
     try:
         raw_structure = search_structure.structure_paragraph_sync(
@@ -520,13 +650,16 @@ def generate(req: GenerateRequest) -> List[dict[str, Any]]:
 
 
 @app.get("/api/slides/{lang}/{cache_id}/{slide_number}.svg", tags=["presentation"])
-def get_slide_svg(lang: Literal["en", "hi"], cache_id: str, slide_number: int):
+def get_slide_svg(lang: Literal["en", "hi"], cache_id: str, slide_number: int) -> Response:
     if not re.fullmatch(r"[a-f0-9]{64}", cache_id) or not 1 <= slide_number <= 8:
         raise HTTPException(status_code=404, detail="Slide image not found.")
-    svg_path = SLIDE_SVG_CACHE_DIR / lang / cache_id / f"slide_{slide_number:02d}.svg"
-    if not svg_path.is_file():
+    try:
+        svg = _read_slide_svg(lang, cache_id, slide_number)
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Slide image not found.")
-    return FileResponse(svg_path, media_type="image/svg+xml")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(content=svg, media_type="image/svg+xml")
 
 
 @app.post("/api/ppt/export", tags=["ppt"])
@@ -537,12 +670,6 @@ def export_presentation(req: PresentationExportRequest) -> FileResponse:
     slides = _cached_slides(query, req.lang)
     if not slides:
         raise HTTPException(status_code=404, detail="No generated slides were found for this conversation.")
-
-    try:
-        _slides_with_svg_urls(query, req.lang, slides)
-    except OSError as exc:
-        logger.exception("Could not prepare SVG slides for PowerPoint export")
-        raise HTTPException(status_code=502, detail="Could not prepare slides for PowerPoint export.") from exc
 
     output = Path(tempfile.gettempdir()) / f"eduvibe-{secrets.token_hex(16)}.pptx"
     try:
@@ -592,12 +719,12 @@ def export_presentation(req: PresentationExportRequest) -> FileResponse:
             export_root = Path(export_dir)
             export_svg_dir = export_root / "svgs"
             export_svg_dir.mkdir()
-            source_dir = _slide_svg_directory(query, req.lang)
-            for number in range(1, len(slides) + 1):
-                shutil.copyfile(
-                    source_dir / f"slide_{number:02d}.svg",
-                    export_svg_dir / f"slide_{number:02d}.svg",
-                )
+            _materialize_slide_svgs(
+                req.lang,
+                _audio_cache_id(query, req.lang),
+                len(slides),
+                export_svg_dir,
+            )
             speech_json = export_root / "speech.json"
             speech_json.write_text(json.dumps(speech_data, ensure_ascii=False), encoding="utf-8")
             build_presentation(

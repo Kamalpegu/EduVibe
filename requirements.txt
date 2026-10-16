@@ -8,4 +8,4 @@ python-pptx>=1,<2
 CairoSVG>=2.7,<3
 playwright>=1.40,<2
 psycopg[binary]>=3.2,<4
-vercel-blob>=0.5,<1
+vercel-blob>=0.5,<1; python_version >= "3.10"

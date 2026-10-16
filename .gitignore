@@ -33,3 +33,4 @@ src/voice_over/audio_hi/
 .DS_Store
 Thumbs.db
 .vscode/
+.vercel/

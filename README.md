@@ -99,7 +99,7 @@ PythonAnywhere's ASGI hosting is experimental; check its current account, pricin
 
 Vercel functions do not provide persistent local files. EduVibe uses Neon Postgres for account, chat, and slide-response data, and a private Vercel Blob store for rendered slide SVGs. The backend creates its tables automatically the first time it accesses Neon. Local development continues to use SQLite and local SVG files unless `DATABASE_URL` is set.
 
-1. Create a Neon Postgres database and copy its pooled connection string. Require TLS (`sslmode=require`).
+1. Create a Neon Postgres database and copy its pooled connection string. Require TLS (`sslmode=require`). Vercel's Python runtime must be Python 3.10 or later for the Blob SDK.
 2. In Vercel, create a private Blob store for the project and copy its read-write token.
 3. Import the project’s GitHub repository into Vercel with the project root as the **Root Directory**. Vercel detects the root [`index.py`](./index.py) FastAPI entrypoint and uses [`requirements.txt`](./requirements.txt) to install dependencies.
 4. In **Project Settings → Environment Variables**, configure:
