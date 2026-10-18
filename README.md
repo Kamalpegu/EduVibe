@@ -247,7 +247,7 @@ The API caches slide responses by normalized query and narration language in `.e
 
 - **The page opens, but searches fail:** check the project-root `.env` for the required Cloudflare values, confirm the token can use Workers AI, and inspect the Uvicorn terminal for the API error.
 - **Google sign-in fails:** check `GOOGLE_CLIENT_ID`, authorized JavaScript origins, OAuth consent-screen settings, and that the backend was restarted.
-- **Signed-in history does not load on Vercel:** set `DATABASE_URL` to the Neon Postgres connection string in the Vercel project's Environment Variables and redeploy. Account history cannot persist in a Vercel function's local filesystem.
+- **Signed-in history does not load on Vercel:** set `DATABASE_URL` to the Neon Postgres connection string in the Vercel project's Environment Variables and redeploy. If it is already set, check that the connection string is correct, includes `sslmode=require`, and connects to a reachable Neon database; inspect the Vercel function logs for the underlying database error. Account history cannot persist in a Vercel function's local filesystem.
 - **Web narration fails:** check internet access to the Puter.js SDK and whether Puter sign-in or usage authorization is required.
 - **Hindi narration fails:** check Cloudflare access for translation, then confirm Puter TTS is available in the browser.
 - **Command-line audio fails:** check internet access to gTTS; retry later if requests are rate-limited.

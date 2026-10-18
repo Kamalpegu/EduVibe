@@ -143,12 +143,22 @@ def _database_connection(local_path: Path) -> Iterator[Any]:
     if DATABASE_URL:
         import psycopg
 
-        with psycopg.connect(
-            DATABASE_URL,
-            connect_timeout=10,
-            prepare_threshold=None,
-        ) as connection:
-            yield _PostgresConnection(connection)
+        try:
+            with psycopg.connect(
+                DATABASE_URL,
+                connect_timeout=10,
+                prepare_threshold=None,
+            ) as connection:
+                yield _PostgresConnection(connection)
+        except psycopg.Error as exc:
+            logger.exception("Could not access the configured Postgres database")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Account history storage is unavailable. Check that DATABASE_URL "
+                    "in Vercel points to a reachable Neon Postgres database, then retry."
+                ),
+            ) from exc
         return
 
     connection = sqlite3.connect(local_path, timeout=10)
