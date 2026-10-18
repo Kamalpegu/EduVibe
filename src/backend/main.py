@@ -187,9 +187,23 @@ def _init_auth_tables(connection: Any) -> None:
     connection.execute(
         "CREATE TABLE IF NOT EXISTS user_chats ("
         "google_sub TEXT NOT NULL, chat_id TEXT NOT NULL, chat_json TEXT NOT NULL, "
-        "updated_at INTEGER NOT NULL, PRIMARY KEY (google_sub, chat_id), "
+        "updated_at BIGINT NOT NULL, PRIMARY KEY (google_sub, chat_id), "
         "FOREIGN KEY (google_sub) REFERENCES google_accounts(google_sub) ON DELETE CASCADE)"
     )
+    if DATABASE_URL:
+        connection.execute(
+            "DO $$ BEGIN "
+            "IF EXISTS ("
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema = current_schema() "
+            "AND table_name = 'user_chats' "
+            "AND column_name = 'updated_at' "
+            "AND data_type <> 'bigint'"
+            ") THEN "
+            "ALTER TABLE user_chats ALTER COLUMN updated_at TYPE BIGINT; "
+            "END IF; "
+            "END $$"
+        )
 
 
 def _public_account(row: tuple[str, str, str]) -> dict[str, str]:
