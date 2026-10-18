@@ -241,12 +241,13 @@ Browser topic + narration language
   -> Browser slide player generates audio with Puter.js
 ```
 
-The API caches slide responses by normalized query and narration language in `.eduvibe_slide_cache.sqlite3`; browser-generated Puter audio is not stored by the backend. The browser keeps chat history in local storage. Cold slide generation now uses one model request rather than serial paragraph, slide-structuring, and narration requests. The existing `/api/ppt` routes build PowerPoint files from the saved SVG/audio inputs used by the command-line presentation pipeline.
+The API caches slide responses by normalized query and narration language in `.eduvibe_slide_cache.sqlite3` locally, or Neon Postgres when `DATABASE_URL` is set. Browser-generated Puter audio is not stored by the backend. Guest chat history stays in browser local storage; signed-in account history is stored in the shared account database (Neon on Vercel) and can be restored across devices. Cold slide generation now uses one model request rather than serial paragraph, slide-structuring, and narration requests. The existing `/api/ppt` routes build PowerPoint files from the saved SVG/audio inputs used by the command-line presentation pipeline.
 
 ## Troubleshooting
 
 - **The page opens, but searches fail:** check the project-root `.env` for the required Cloudflare values, confirm the token can use Workers AI, and inspect the Uvicorn terminal for the API error.
 - **Google sign-in fails:** check `GOOGLE_CLIENT_ID`, authorized JavaScript origins, OAuth consent-screen settings, and that the backend was restarted.
+- **Signed-in history does not load on Vercel:** set `DATABASE_URL` to the Neon Postgres connection string in the Vercel project's Environment Variables and redeploy. Account history cannot persist in a Vercel function's local filesystem.
 - **Web narration fails:** check internet access to the Puter.js SDK and whether Puter sign-in or usage authorization is required.
 - **Hindi narration fails:** check Cloudflare access for translation, then confirm Puter TTS is available in the browser.
 - **Command-line audio fails:** check internet access to gTTS; retry later if requests are rate-limited.
@@ -258,5 +259,5 @@ The API caches slide responses by normalized query and narration language in `.e
 ## Notes
 
 - The account menu uses Google sign-in. Puter authorization, if requested, is separate and used only by the TTS service.
-- The app currently uses local browser storage for history; signed-in user accounts do not sync chat history.
+- Guest history is local to the browser. Signed-in history is stored in the configured account database and syncs anywhere the same account signs in.
 - Keep credentials, audio caches, and generated files private when sharing or deploying the project.

@@ -132,7 +132,14 @@ class _PostgresConnection:
 @contextmanager
 def _database_connection(local_path: Path) -> Iterator[Any]:
     if IS_VERCEL and not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL must be configured for persistent Vercel storage.")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Persistent storage is not configured. Add DATABASE_URL with your "
+                "Neon Postgres connection string in Vercel Environment Variables, "
+                "then redeploy to enable account history."
+            ),
+        )
     if DATABASE_URL:
         import psycopg
 

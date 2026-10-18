@@ -97,7 +97,7 @@ export async function renderGoogleSignInButton(container, clientId, onCredential
     size: "large",
     text: "continue_with",
     shape: "pill",
-    width: 280,
+    width: Math.min(280, container.clientWidth),
     logo_alignment: "left",
   });
 }
